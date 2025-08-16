@@ -4,6 +4,8 @@
 
 A complete remake of the Corne v4 choc keyboard [crkbd](https://github.com/foostan/crkbd/) with more features and improvements such as USB-C between both halves, improved EMI stability and integrated OLED displays.
 
+This firmware is also 100% compatible with the [Corne MX Pro](https://www.keebart.com/products/corne-mx) keyboard.
+
 - Keyboard Maintainer: [Keebart](https://github.com/Keebart)
 - Hardware Supported: RP2040
 - Hardware Availability: [Keebart Shop](https://keebart.com/products/corne)
