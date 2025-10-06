@@ -205,7 +205,7 @@ const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][NUM_DIRECTIONS] = {
 #ifdef OLED_ENABLE
 
 static const uint8_t OLED_WIDTH = OLED_DISPLAY_HEIGHT;
-static const uint16_t SPLASH_DURATION_MS = 2000;
+static const uint16_t SPLASH_DURATION_MS = 2500;
 static const uint32_t WPM_WINDOW_MS = 30000;
 
 #define WPM_BUFFER_SIZE 512  // must be power of 2
@@ -388,12 +388,7 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 }
 
 oled_rotation_t oled_init_user(oled_rotation_t rotation) {
-    if (!is_keyboard_master()) {
-        return OLED_ROTATION_90;
-    } else {
-        return OLED_ROTATION_270;
-    }
-    return rotation;
+    return OLED_ROTATION_90;
 }
 
 static void render_splash(void) {
@@ -424,13 +419,13 @@ bool oled_task_user(void) {
 
         // Lock status
         led_t led_state = host_keyboard_led_state();
-        if (!led_state.num_lock) {
+        if (led_state.num_lock) {
             oled_blit_16x16_P(NUM_LOCK_BITMAP, 0, 3);
         }
-        if (!led_state.caps_lock) {
+        if (led_state.caps_lock) {
             oled_blit_16x16_P(CAPS_LOCK_BITMAP, 24, 3);
         }
-        if (!led_state.scroll_lock) {
+        if (led_state.scroll_lock) {
             oled_blit_16x16_P(SCROLL_LOCK_BITMAP, 48, 3);
         }
 
@@ -490,9 +485,9 @@ bool oled_task_user(void) {
 
         // Keebart logo
         oled_set_cursor(0, 14);
-        oled_write_P(PSTR("KEE"), false);
+        oled_write_P(PSTR("KEEB"), false);
         oled_set_cursor(0, 15);
-        oled_write_P(PSTR("BART"), false);
+        oled_write_P(PSTR("ART"), false);
         oled_blit_24x24_P(KEEBART_BITMAP_24x24, 40, 13);
 
     }
