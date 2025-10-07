@@ -438,7 +438,7 @@ bool oled_task_user(void) {
 
         // Split balance
         oled_set_cursor(0, 9);
-        oled_write_P(PSTR("Balance:"), false);
+        oled_write_P(PSTR("Left:"), false);
         oled_set_cursor(0, 10);
         // TODO: implement this
         oled_print_right_aligned("?? %", g_oled_max_char);
@@ -478,7 +478,7 @@ bool oled_task_user(void) {
 
         // split balance
         oled_set_cursor(0, 9);
-        oled_write_P(PSTR("Balance:"), false);
+        oled_write_P(PSTR("Right:"), false);
         oled_set_cursor(0, 10);
         // TODO: implement this
         oled_print_right_aligned("?? %", g_oled_max_char);
