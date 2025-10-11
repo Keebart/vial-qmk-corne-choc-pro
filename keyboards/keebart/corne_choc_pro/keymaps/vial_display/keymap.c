@@ -40,7 +40,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         KC_8, KC_9, KC_0, KC_BSPC,
         //|--------+--------+--------+--------+--------+--------+--------|
         //|--------+--------+--------+--------+--------+--------+--------|
-        KC_LCTL, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, KC_LALT, KC_RALT,
+        KC_LCTL, XXXXXXX, KC_NUM, KC_CAPS, KC_SCRL, XXXXXXX, KC_LALT, KC_RALT,
         KC_LEFT, KC_DOWN, KC_UP, KC_RIGHT, XXXXXXX, XXXXXXX,
         //|--------+--------+--------+--------+--------+--------+--------'
         //`--------+--------+--------+--------+--------+--------+--------|
@@ -204,12 +204,21 @@ const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][NUM_DIRECTIONS] = {
 
 #ifdef OLED_ENABLE
 
+#include "transactions.h"
+
+typedef struct {
+    uint16_t keycode;
+} lastkey_m2s_t;
+
+// typedef struct {
+//     uint32_t master_press;
+// } presscount_m2s_t;
+
 static const uint8_t OLED_WIDTH = OLED_DISPLAY_HEIGHT;
 static const uint16_t SPLASH_DURATION_MS = 2500;
-static const uint32_t WPM_WINDOW_MS = 30000;
 
-#define WPM_BUFFER_SIZE 512  // must be power of 2
-
+static bool g_oled_init_done = false;
+static uint32_t g_user_on_time = 0;
 static uint8_t g_oled_max_char;
 static uint8_t g_oled_max_line;
 static bool splash_active = true;
@@ -217,9 +226,14 @@ static uint32_t splash_start_ms = 0;
 static uint16_t g_last_keycode = KC_NO;
 static uint32_t g_press_left = 0;
 static uint32_t g_press_right = 0;
-static uint32_t ts_buf[WPM_BUFFER_SIZE];
-static uint16_t ts_head = 0;
-static uint16_t ts_tail = 0;
+
+static inline pin_t get_charge_pump_enable_pin(void) {
+    if (is_keyboard_left()) {
+        return GP5;
+    } else {
+        return GP25;
+    }
+}
 
 void oled_print_right_aligned(const char *text, const uint8_t width) {
     uint8_t len = strlen(text);
@@ -264,57 +278,30 @@ uint16_t unwrap_keycode(uint16_t kc) {
     return kc;
 }
 
-static inline bool buf_empty(void) {
-    return ts_head == ts_tail;
-}
-static inline uint16_t buf_len(void) {
-    return (ts_head - ts_tail) & (WPM_BUFFER_SIZE - 1);
-}
-static inline void buf_push(uint32_t t) {
-    ts_buf[ts_head] = t;
-    ts_head = (ts_head + 1) & (WPM_BUFFER_SIZE - 1);
-    if (ts_head == ts_tail) {
-        // buffer full, drop the oldest
-        ts_tail = (ts_tail + 1) & (WPM_BUFFER_SIZE - 1);
-    }
-}
-static inline uint32_t buf_front(void) {
-    return ts_buf[ts_tail];
-}
-static inline void buf_pop(void) {
-    ts_tail = (ts_tail + 1) & (WPM_BUFFER_SIZE - 1);
-}
-
-bool is_printable(uint16_t kc) {
-    kc = unwrap_keycode(kc);
-    if ((kc >= KC_A && kc <= KC_Z) || (kc >= KC_1 && kc <= KC_0)) {
-        return true;
-    }
-    switch (kc) {
-        case KC_SPC: case KC_TAB: case KC_ENT: case KC_BSPC:
-        case KC_MINS: case KC_EQL: case KC_LBRC: case KC_RBRC:
-        case KC_BSLS: case KC_SCLN: case KC_QUOT: case KC_GRV:
-        case KC_COMM: case KC_DOT: case KC_SLSH:
-            return true;
-        default:
-            return false;
-    }
-}
-
-uint16_t dwpm_current(void) {
-    const uint32_t now = timer_read32();
-    // drop timestamps older than WPM_WINDOW_MS
-    while (!buf_empty() && (uint32_t)(now - buf_front()) > WPM_WINDOW_MS) {
-        buf_pop();
-    }
-    uint16_t presses = buf_len();
-    // WPM = (presses / 5) / (minutes)
-    uint16_t dwpm = (uint16_t)(((uint32_t)presses * 60000u * 10u) / (5u * WPM_WINDOW_MS));
-    if (dwpm > 9999u) {
-        dwpm = 9999u;
-    }
+uint16_t get_current_dwpm(void) {
+    const uint8_t wpm = get_current_wpm();
+    uint16_t dwpm = (uint16_t)wpm * 10u;
     return dwpm;
 }
+
+static inline uint32_t press_total(void) {
+    return g_press_left + g_press_right;
+}
+
+static void user_sync_lastkey_slave(uint8_t in_len, const void* in_data,
+                                    uint8_t out_len, void* out_data) {
+    if (in_len >= sizeof(lastkey_m2s_t)) {
+        const lastkey_m2s_t* p = (const lastkey_m2s_t*)in_data;
+        g_last_keycode = p->keycode;
+    }
+}
+
+// static void user_sync_presscount_slave(uint8_t in_len, const void* in_data,
+//                                        uint8_t out_len, void* out_data) {
+//     if (in_len >= sizeof(uint32_t)) {
+//         g_press_right = *(const uint32_t*)in_data;  // assuming master = left
+//     }
+// }
 
 void print_current_layer(uint8_t row) {
     char layer_str[8];
@@ -359,7 +346,7 @@ void print_uptime(uint8_t row) {
 }
 
 void print_wpm(uint8_t row) {
-    uint16_t wpm = dwpm_current();
+    uint16_t wpm = get_current_dwpm();
     uint16_t wpm_int = wpm / 10u;
     uint16_t wpm_frac = wpm % 10u;
 
@@ -370,22 +357,50 @@ void print_wpm(uint8_t row) {
 }
 
 bool process_record_user(uint16_t keycode, keyrecord_t *record) {
+    oled_on();
+    g_user_on_time = timer_read32();
+
     if (record->event.pressed) {
         // store the last keycode pressed
         g_last_keycode = keycode;
+
         uint8_t col = record->event.key.col;
-        if (col < MATRIX_COLS) {
+        if (col < (MATRIX_COLS / 2)) {
             g_press_left++;
         } else {
             g_press_right++;
         }
 
-        if (is_printable(keycode)) {
-            buf_push(timer_read32());
+        if (is_keyboard_master()) {
+            lastkey_m2s_t pkt = { g_last_keycode };
+            (void)transaction_rpc_send(USER_SYNC_LASTKEY, sizeof(pkt), &pkt);
+
+            // presscount_m2s_t pkt1 = { g_press_left };
+            // (void)transaction_rpc_send(USER_SYNC_PRESSCOUNT, sizeof(pkt1), &pkt1);
         }
     }
     return true;
 }
+
+bool oled_post_init(void) {
+    if (!g_oled_init_done) {
+        // set OLED size for characters
+        g_oled_max_char = oled_max_chars();
+        g_oled_max_line = oled_max_lines();
+
+        // enable charge pump
+        pin_t dsp_pen_pin = get_charge_pump_enable_pin();
+        gpio_write_pin_high(dsp_pen_pin);
+
+        // start timer for splash screen
+        splash_start_ms = timer_read32();
+        splash_active = true;
+
+        g_oled_init_done = true;
+    }
+    return false;
+}
+
 
 oled_rotation_t oled_init_user(oled_rotation_t rotation) {
     return OLED_ROTATION_90;
@@ -398,18 +413,26 @@ static void render_splash(void) {
 }
 
 bool oled_task_user(void) {
-    if (splash_active) {
-        g_oled_max_char = oled_max_chars();
-        g_oled_max_line = oled_max_lines();
+    oled_post_init();
 
+    if (splash_active) {
         if (timer_elapsed32(splash_start_ms) > SPLASH_DURATION_MS) {
             splash_active = false;
             oled_clear();
         } else {
             render_splash();
-            return false;
         }
+        return false;
     }
+
+    if (!is_oled_on()) {
+        return false;
+    }
+
+    if (g_user_on_time == 0) {
+        g_user_on_time = timer_read32();
+    }
+    const uint32_t since_on = timer_elapsed32(g_user_on_time);
 
     if (is_keyboard_left()) {
         // Layer state
@@ -421,12 +444,18 @@ bool oled_task_user(void) {
         led_t led_state = host_keyboard_led_state();
         if (led_state.num_lock) {
             oled_blit_16x16_P(NUM_LOCK_BITMAP, 0, 3);
+        } else {
+            oled_blit_16x16_P(EMPTY_BITMAP, 0, 3);
         }
         if (led_state.caps_lock) {
             oled_blit_16x16_P(CAPS_LOCK_BITMAP, 24, 3);
+        } else {
+            oled_blit_16x16_P(EMPTY_BITMAP, 24, 3);
         }
         if (led_state.scroll_lock) {
             oled_blit_16x16_P(SCROLL_LOCK_BITMAP, 48, 3);
+        } else {
+            oled_blit_16x16_P(EMPTY_BITMAP, 48, 3);
         }
 
         // Last key pressed
@@ -436,12 +465,20 @@ bool oled_task_user(void) {
         const char *keycode_str = get_keycode_string(unwrap_keycode(g_last_keycode));
         oled_print_right_aligned(keycode_str, g_oled_max_char);
 
-        // Split balance
+        // split balance
+        uint32_t total = press_total();
+        if (total == 0) {
+            total = 1;  // avoid div by 0
+        }
+        const uint8_t pct_left = (100 * g_press_left) / total;
+        const uint8_t pct_right = (100 * g_press_right) / total;
+
         oled_set_cursor(0, 9);
-        oled_write_P(PSTR("Left:"), false);
+        oled_write_P(PSTR("L:R"), false);
         oled_set_cursor(0, 10);
-        // TODO: implement this
-        oled_print_right_aligned("?? %", g_oled_max_char);
+        char balance_buf[10];
+        snprintf(balance_buf, sizeof(balance_buf), "%3u:%3u", pct_left, pct_right);
+        oled_print_right_aligned(balance_buf, g_oled_max_char);
 
         // QMK logo
         oled_set_cursor(7, 15);
@@ -463,9 +500,9 @@ bool oled_task_user(void) {
         oled_write_P(QMK_LOGO_3, false);
     } else {
         // Uptime (only if oled is on)
-        if (is_oled_on()) {
-            oled_set_cursor(0, 0);
-            oled_write_P(PSTR("Uptime:"), false);
+        oled_set_cursor(0, 0);
+        oled_write_P(PSTR("Uptime:"), false);
+        if (is_oled_on() && since_on + 45000u < OLED_TIMEOUT) {
             print_uptime(1);
         }
 
@@ -473,15 +510,18 @@ bool oled_task_user(void) {
         oled_set_cursor(0, 3);
         oled_write_P(PSTR("Avg Speed"), false);
         oled_set_cursor(0, 4);
-        oled_write_P(PSTR("(30 s):"), false);
+        oled_write_P(PSTR("(25 s):"), false);
         print_wpm(5);
 
-        // split balance
-        oled_set_cursor(0, 9);
-        oled_write_P(PSTR("Right:"), false);
-        oled_set_cursor(0, 10);
-        // TODO: implement this
-        oled_print_right_aligned("?? %", g_oled_max_char);
+        // TODO: split balance on both halfs
+        // // split balance
+        // oled_set_cursor(0, 9);
+        // oled_write_P(PSTR("Right:"), false);
+        // oled_set_cursor(0, 10);
+        // const uint8_t pct = (100 * g_press_right) / total;
+        // char balance_buf[6];
+        // snprintf(balance_buf, sizeof(balance_buf), "%3u %%", pct);
+        // oled_print_right_aligned(balance_buf, g_oled_max_char);
 
         // Keebart logo
         oled_set_cursor(0, 14);
@@ -489,17 +529,16 @@ bool oled_task_user(void) {
         oled_set_cursor(0, 15);
         oled_write_P(PSTR("ART"), false);
         oled_blit_24x24_P(KEEBART_BITMAP_24x24, 40, 13);
-
     }
     return false;
 }
 
 void keyboard_post_init_user(void) {
-    gpio_set_pin_output(GP5);
-    gpio_write_pin_high(GP5);
-    splash_start_ms = timer_read32();
-    splash_active = true;
+    pin_t dsp_pen_pin = get_charge_pump_enable_pin();
+    gpio_set_pin_output(dsp_pen_pin);
+    gpio_write_pin_low(dsp_pen_pin);
+    transaction_register_rpc(USER_SYNC_LASTKEY, user_sync_lastkey_slave);
+    // transaction_register_rpc(USER_SYNC_PRESSCOUNT, user_sync_presscount_slave);
 }
 #endif
-
 
